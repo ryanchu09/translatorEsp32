@@ -1,14 +1,18 @@
 #include <WiFi.h>
 // #include <WiFiClient.h>
 #include "driver/i2s.h"
-const char* SSID = "TELUS8535";
-const char* PASS = "pchu4$$$";
-const char* SERVER_IP = "192.168.1.138";
+// const char* SSID = "TELUS8535";
+// const char* PASS = "pchu4$$$";
+// const char* SERVER_IP = "192.168.1.138";
 #include <esp_system.h>
 
-// const char* SSID = "SD38_Managed";
-// const char* PASS = "je334an-coach-be4m-lucio-help$r-pier-causing-DEEDS";
-// const char* SERVER_IP = "10.9.21.25";
+// const char* SSID = "HotspotRyan";
+// const char* PASS = "legoat77";
+// const char* SERVER_IP = "172.20.10.4";
+
+const char* SSID = "SD38_Managed";
+const char* PASS = "je334an-coach-be4m-lucio-help$r-pier-causing-DEEDS";
+const char* SERVER_IP = "10.9.23.112";
 const uint16_t SERVER_PORT = 8000;
 // const char* SERVER_PATH = "/upload-wav";
 const char* SERVER_PATH_BASE = "/audio-chunk";
@@ -22,19 +26,20 @@ const char* SERVER_PATH_BASE = "/audio-chunk";
 #define I2S_LRC 26
 #define I2S_DOUT 27
 
+#define LABEL_PIN 23
 
 // PCM Header parameters
 #define SAMPLE_RATE       16000
-#define SECONDS_TO_RECORD 2
+#define SECONDS_TO_RECORD 10
 #define CHANNELS          1
 #define BITS_PER_SAMPLE   16  // we'll convert to 16-bit
 #define I2S_READ_BITS     32  // INMP441 gives 24-bit in 32-bit frames
 #define FRAMES_PER_CHUNK 1024
 
-const float CHUNK_DURATION = 1000.0f * FRAMES_PER_CHUNK/SAMPLE_RATE;
+
 
 static int16_t buf[FRAMES_PER_CHUNK];
-
+float rmsFinal;
 
 //tells the ESP32 what i2s port to use (0 or 1)
 static const i2s_port_t I2S_RX_PORT = I2S_NUM_0;
@@ -88,51 +93,82 @@ bool read_block_int16(int16_t* out, size_t frames) {
     int16_t s16 = constrain((int16_t)(s32 >> 11), -32767, 32767);
     out[i] = s16;
     float sample = float(s16) / 32768.0f;
+    RMS += sample*sample;
     
   }
   
   return true;
+  rmsFinal = sqrtf(RMS/frames);
+  Serial.printf("rms: %.4f\n", rmsFinal);
 }
 
-bool post_chunk(const char* sid, uint32_t seq, const uint8_t* data, size_t len, bool last, const char* label) {
+bool stream_capture(const char* sid, const char* label) {
+  const size_t total_samples = SAMPLE_RATE * SECONDS_TO_RECORD;
+  const size_t total_bytes   = total_samples * sizeof(int16_t);
+
   WiFiClient client;
   if (!client.connect(SERVER_IP, SERVER_PORT)) {
     Serial.println("HTTP connect failed");
     return false;
   }
 
-  // generates the url path. contains the session id(sid), chunk sequence number(seq) as well as other parameters about the data
-  String path = String(SERVER_PATH_BASE) + 
-                "?sid=" + sid + 
-                "&seq=" + seq + 
-                "&last=" + (last ? "1" : "0") + 
-                "&sr=" + SAMPLE_RATE + 
-                "&bits=" + BITS_PER_SAMPLE + 
-                "&ch=" + CHANNELS + "&label=" + label;
-  // Starts the http request, tells it it's post, and subsistues the path as a string
+  String path = String(SERVER_PATH_BASE) +
+                "?sid=" + sid +
+                "&seq=0&last=1" +      // single POST covers entire recording
+                "&sr=" + SAMPLE_RATE +
+                "&bits=" + BITS_PER_SAMPLE +
+                "&ch=" + CHANNELS +
+                "&label=" + label;
+
   client.printf("POST %s HTTP/1.1\r\n", path.c_str());
   client.printf("Host: %s:%u\r\n", SERVER_IP, SERVER_PORT);
   client.printf("Content-Type: application/octet-stream\r\n");
-  client.printf("Content-Length: %u\r\n", (unsigned)len);
-  client.print("Connection:close\r\n\r\n");
-  client.write(data,len);
+  client.printf("Content-Length: %u\r\n", (unsigned)total_bytes);
+  client.print("Connection: close\r\n\r\n");
 
-    // Read a short response (optional)
-  uint32_t t0 = millis();
+  size_t sent = 0;
+  while (sent < total_samples) {
+    size_t to_read = min((size_t)FRAMES_PER_CHUNK, total_samples - sent);
+    if (!read_block_int16(buf, to_read)) {
+      Serial.println("read failed");
+      
+      client.stop();
+      return false;
+    }
+    // Serial.print("buf[0..7]: ");
+    // for (int i = 0; i < 8; ++i) {
+    //   Serial.print(buf[i]);
+    //   Serial.print(" ");
+    // }
+    // Serial.println();
+    size_t bytes = to_read * sizeof(int16_t);
+    if (client.write((uint8_t*)buf, bytes) != bytes) {
+      Serial.println("write stalled");
+      client.stop();
+      return false;
+    }
+    sent += to_read;
+  }
+
   while (client.connected() || client.available()) {
     if (client.available()) Serial.write(client.read());
-    if (millis() - t0 > 3000) break;
   }
   client.stop();
-
   return true;
 }
 
 
+const char* current_label() {
+  int state = digitalRead(LABEL_PIN);
+  Serial.println(state);
+  if (state == LOW){
+    return "background";
+  }
+  else{
+    return "speech";
+  }
+}
 
-// String sid;
-unsigned long startMicros = 0;
-const unsigned long intervalMicros = 10000000;
 const char* speech = "speech";
 const char* background = "background";
 void setup() {
@@ -150,7 +186,7 @@ void setup() {
   }
   Serial.printf("\nIP: %s\n", WiFi.localIP().toString().c_str());
   // sid = make_session_id();
-  
+  pinMode(LABEL_PIN, INPUT_PULLUP);
 
 }
 
@@ -162,24 +198,11 @@ String make_session_id() {
 }
 
 void loop() {
-  startMicros = micros();
-  // put your main code here, to run repeatedly:
-  // simple_read_function();
-  // const uint32_t chunks_to_send = (SAMPLE_RATE * SECONDS_TO_RECORD) / FRAMES_PER_CHUNK;
   String sid = make_session_id();
-  bool last=false;
-  uint32_t seq = 0;
-  while (!last) {
-    if (!read_block_int16(buf, FRAMES_PER_CHUNK)) {
-      Serial.println("read failed");
-      break;
-    }
-    unsigned long now = micros();
-    last = (now - startMicros) >= intervalMicros;
-    if (!post_chunk(sid.c_str(), seq++, (uint8_t*)buf, FRAMES_PER_CHUNK * sizeof(int16_t), last, speech)) {
-      Serial.println("didn't connect");
-    }
-  }
+  delay(1000);
+  const char* label = current_label();
+  Serial.println(label);
+  stream_capture(sid.c_str(), label);
   while(true){delay(1000);};
 
   

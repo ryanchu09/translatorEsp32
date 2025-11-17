@@ -25,7 +25,6 @@ TEXT_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 META_FILENAME = "meta.json"
 RAW_FILENAME = "audio.raw"
 WAV_FILENAME = "audio.wav"
-SESSIONS = {}
 
 def wav_header(data_bytes: int, sample_rate: int, bits_per_sample: int, channels: int) -> bytes:
     """Construct a basic PCM WAV header."""
@@ -46,16 +45,6 @@ def wav_header(data_bytes: int, sample_rate: int, bits_per_sample: int, channels
     return header
 
 
-def _extract_last_flag(args) -> bool:
-    """Parse the `last` flag from the query string."""
-    raw = args.get("last", "")
-    norm = str(raw).strip().lower()
-    if norm in ("", "1", "true", "yes", "y", "on"):
-        return True
-    if norm in ("0", "false", "no", "off"):
-        return False
-    return False
-
 def next_file_name(label_dir, prefix):
     # os.makedirs(label_dir, exist_ok = True)
     count = 0
@@ -64,20 +53,14 @@ def next_file_name(label_dir, prefix):
             count += 1
     return (os.path.join(label_dir, f"{prefix}{count+1}.wav"), os.path.join(label_dir, f"{prefix}{count+1}.raw"))
 
-def _data_paths(label, sid):
-    if sid in SESSIONS:
-        return SESSIONS[sid]
-    
-    if TEXT_PATTERN.match(label) and label == "speech": 
+def _data_paths(label):
+    if label == "speech":
         wav_path, raw_path = next_file_name(SPEECH_DIR, "speech")
-    elif TEXT_PATTERN.match(label) and label == "background": 
-        wav_path, raw_path = next_file_name(BACKGROUND_DIR, "background")   
-    # returns a dict o all the dictionaries that hold the data of an audio chunk
+    elif label == "background":
+        wav_path, raw_path = next_file_name(BACKGROUND_DIR, "background")
     else:
         raise ValueError("unsupported label")
-    
-    SESSIONS[sid] = { "file_name": wav_path, "raw_name": raw_path}
-    return SESSIONS[sid]
+    return {"file_name": wav_path, "raw_name": raw_path}
 
 # audio-chunk route
 @app.route("/audio-chunk", methods=["POST"])
@@ -89,17 +72,6 @@ def receive_audio_chunk():
     if not TEXT_PATTERN.match(sid):
         return jsonify({"error": "invalid sid"}), 400
 
-    # gets the seq of the current chunk
-    seq_str = request.args.get("seq")
-    if seq_str is None:
-        return jsonify({"error": "missing seq"}), 400
-    try:
-        seq = int(seq_str)
-    except ValueError:
-        return jsonify({"error": "seq must be an integer"}), 400
-    if seq < 0:
-        return jsonify({"error": "seq must be non-negative"}), 400
-    
     label = request.args.get("label")
     if label is None:
         return jsonify({"error": "missing label"}), 400
@@ -114,48 +86,36 @@ def receive_audio_chunk():
     if sample_rate <= 0 or bits_per_sample <= 0 or channels <= 0:
         return jsonify({"error": "invalid audio parameters"}), 400
 
-    chunk = request.get_data(cache=False)
-    if not chunk:
+    pcm_payload = request.get_data(cache=False)
+    if not pcm_payload:
         return jsonify({"error": "empty payload"}), 400
 
-    last_flag = _extract_last_flag(request.args)
     try:
-        download_path = _data_paths(label, sid)
+        download_path = _data_paths(label)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
+    with open(download_path["raw_name"], "wb") as raw_out:
+        raw_out.write(pcm_payload)
+
+    wav_bytes = wav_header(len(pcm_payload), sample_rate, bits_per_sample, channels) + pcm_payload
     
-    # writes the raw pcm data
-    with open(download_path["raw_name"], "ab") as raw_out:
-        raw_out.write(chunk)
+    with open(download_path["file_name"], "wb") as wav_out:
+        wav_out.write(wav_bytes)
 
-
-    # creates a reponse dict that helps debug
     response = {
         "status": "ok",
         "sid": sid,
-        "seq": seq,
-        "last": last_flag,
-        "bytes_received": len(chunk),
+        "bytes_received": len(pcm_payload),
+        "total_bytes": len(wav_bytes),
     }
 
-    # handles the case when the last chunk has been sent
-    if last_flag:
-        # reads the raw pcm_bytes
-        with open(download_path["raw_name"], "rb") as raw_in:
-            pcm_bytes = raw_in.read()
-        # creates the wav header combined with the pcm data
-        wav_bytes = wav_header(len(pcm_bytes), sample_rate, bits_per_sample, channels) + pcm_bytes
-        # writes the wav data into a file
-        with open(download_path["file_name"], "wb") as wav_out:
-            wav_out.write(wav_bytes)
-        response["total_bytes"] = len(wav_bytes)
-        try:
-            os.remove(download_path["raw_name"])
-        except FileNotFoundError:
-            pass
+    try:
+        os.remove(download_path["raw_name"])
+    except FileNotFoundError:
+        pass
 
-        print(response)
+    print(response)
     return jsonify(response), 200
 
 

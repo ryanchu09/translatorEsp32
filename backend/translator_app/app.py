@@ -10,8 +10,13 @@ from translator_app.STT import process_audio, LANGUAGE_MEMORY
 
 app = Flask(__name__)
 
+
+
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 SESS_DIR = os.path.join(BASE_DIR, "sessions")
+CAPTURE_VAD_DATA = os.path.join(
+    BASE_DIR, "..", "firmware", "trainingVAD"
+)
 os.makedirs(SESS_DIR, exist_ok=True)
 
 
@@ -98,6 +103,8 @@ def receive_audio_chunk():
         return jsonify({"error": "seq must be an integer"}), 400
     if seq < 0:
         return jsonify({"error": "seq must be non-negative"}), 400
+    
+    label = request.args.get("label")
 
     # gets the data to build the meta file
     sample_rate = request.args.get("sr", 16000, type=int) or 16000

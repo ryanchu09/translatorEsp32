@@ -1,0 +1,28 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+*/venv/
+*/.venv/
+
+
+# Flask instance/config
+backend/instance/
+instance/
+
+# Runtime session data & audio artifacts
+backend/translator_app/sessions/
+TranslatorWebpage/sessions/
+**/chunk*.pcm
+*.wav
+
+# Local settings
+.vscode/
+.env
+
+# macOS
+.DS_Store
