@@ -6,8 +6,13 @@ __pycache__/
 # Virtual environments
 venv/
 .venv/
+venv-tf/
+venv-tf-old/
+venv312/
+venv*/
 */venv/
 */.venv/
+*/venv*/
 
 
 # Flask instance/config
